@@ -6,7 +6,15 @@ import VotingInterface from '../components/VotingInterface';
 import ResultsDisplay from '../components/ResultsDisplay';
 import { VotingProvider } from '../contexts/VotingContext';
 
-export default function Home() {
+interface HomeProps {
+  searchParams?: Promise<{ mode?: string | string[] }>;
+}
+
+export default async function Home({ searchParams }: HomeProps) {
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const modeParam = resolvedSearchParams?.mode;
+  const isAdmin = Array.isArray(modeParam) ? modeParam.includes('admin') : modeParam === 'admin';
+
   return (
     <VotingProvider>
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 py-8 px-4">
@@ -24,7 +32,7 @@ export default function Home() {
             <RoomSelector />
             <VotingInterface />
             <AddSchoolForm />
-            <ResultsDisplay />
+            <ResultsDisplay isAdmin={isAdmin} />
           </div>
         </div>
       </div>

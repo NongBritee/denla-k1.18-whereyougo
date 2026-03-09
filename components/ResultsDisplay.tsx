@@ -1,14 +1,15 @@
 'use client';
 
 import React from 'react';
-import { useSearchParams } from 'next/navigation';
 import { PieChart, Pie, Cell, Legend, Tooltip, ResponsiveContainer } from 'recharts';
 import { useVoting } from '../contexts/VotingContext';
 
-const ResultsDisplay: React.FC = () => {
+interface ResultsDisplayProps {
+  isAdmin?: boolean;
+}
+
+const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ isAdmin = false }) => {
   const { schools, votes, userVote, room, deleteSchool } = useVoting();
-  const searchParams = useSearchParams();
-  const isAdmin = searchParams.get('mode') === 'admin';
 
   const voteCounts = schools.map(school => ({
     ...school,
