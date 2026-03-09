@@ -8,13 +8,20 @@ interface VotingContextType extends VotingState {
   setMode: (mode: 'anonymous' | 'named') => void;
   setVoterName: (name: string) => void;
   setRoom: (room: string) => void;
-  submitVote: (schoolId: string) => void;
-  resetVote: () => void;
-  addSchool: (school: Omit<School, 'id'>) => void;
-  deleteSchool: (schoolId: string) => void;
+  submitVote: (schoolId: string) => Promise<void>;
+  resetVote: () => Promise<void>;
+  addSchool: (school: Omit<School, 'id'>) => Promise<void>;
+  deleteSchool: (schoolId: string) => Promise<void>;
 }
 
 const VotingContext = createContext<VotingContextType | undefined>(undefined);
+
+interface ServerStateResponse {
+  schools: School[];
+  votes: Vote[];
+  userVote?: Vote;
+  duplicated?: boolean;
+}
 
 export const useVoting = () => {
   const context = useContext(VotingContext);
@@ -35,46 +42,78 @@ export const VotingProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     deviceId: '',
   });
 
-  // Generate or load device ID on mount
+  const syncFromServer = async (deviceId: string) => {
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (!response.ok) return;
+
+      const serverState = (await response.json()) as ServerStateResponse;
+      setState(prev => ({
+        ...prev,
+        schools: serverState.schools,
+        votes: serverState.votes,
+        userVote: serverState.votes.find(v => v.deviceId === deviceId),
+      }));
+    } catch {
+      // Keep existing local state when server is temporarily unavailable.
+    }
+  };
+
+  const postStateAction = async (action: unknown): Promise<ServerStateResponse | null> => {
+    try {
+      const response = await fetch('/api/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action),
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      return (await response.json()) as ServerStateResponse;
+    } catch {
+      return null;
+    }
+  };
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       let deviceId = localStorage.getItem('deviceId');
       if (!deviceId) {
-        // Generate new device ID
-        deviceId = 'device-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        deviceId = `device-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         localStorage.setItem('deviceId', deviceId);
       }
-
-      const storedVotes = localStorage.getItem('votes') ? JSON.parse(localStorage.getItem('votes')!) : [];
-      const storedUserVote = localStorage.getItem('userVote') ? JSON.parse(localStorage.getItem('userVote')!) : undefined;
 
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setState(prev => ({
         ...prev,
-        votes: storedVotes,
-        userVote: storedUserVote || storedVotes.find((v: Vote) => v.deviceId === deviceId),
         currentMode: localStorage.getItem('currentMode') as 'anonymous' | 'named' | null,
         voterName: localStorage.getItem('voterName') || '',
         room: localStorage.getItem('room') || '',
         deviceId,
       }));
+
+      void syncFromServer(deviceId);
+
+      const intervalId = window.setInterval(() => {
+        void syncFromServer(deviceId);
+      }, 5000);
+
+      return () => window.clearInterval(intervalId);
     }
   }, []);
 
-  // Save to localStorage when state changes
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('votes', JSON.stringify(state.votes));
-      if (state.userVote) {
-        localStorage.setItem('userVote', JSON.stringify(state.userVote));
-      } else {
-        localStorage.removeItem('userVote');
-      }
       localStorage.setItem('currentMode', state.currentMode || '');
       localStorage.setItem('voterName', state.voterName);
       localStorage.setItem('room', state.room);
+      if (state.deviceId) {
+        localStorage.setItem('deviceId', state.deviceId);
+      }
     }
-  }, [state.votes, state.userVote, state.currentMode, state.voterName, state.room]);
+  }, [state.currentMode, state.voterName, state.room, state.deviceId]);
 
   const setMode = (mode: 'anonymous' | 'named') => {
     setState(prev => ({ ...prev, currentMode: mode }));
@@ -88,69 +127,78 @@ export const VotingProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setState(prev => ({ ...prev, room }));
   };
 
-  const submitVote = (schoolId: string) => {
-    const newVote: Vote = {
-      id: Date.now().toString(),
-      schoolId,
-      voterName: state.currentMode === 'named' ? state.voterName : undefined,
-      room: state.room || undefined,
-      deviceId: state.deviceId,
-      timestamp: new Date(),
-      mode: state.currentMode!,
-    };
+  const submitVote = async (schoolId: string) => {
+    if (!state.currentMode || !state.deviceId) return;
 
-    setState(prev => {
-      // Keep exactly one vote per device by replacing existing device vote.
-      const filteredVotes = prev.votes.filter(v => v.deviceId !== prev.deviceId);
-
-      return {
-        ...prev,
-        votes: [...filteredVotes, newVote],
-        userVote: newVote,
-      };
+    const nextState = await postStateAction({
+      action: 'submitVote',
+      payload: {
+        schoolId,
+        voterName: state.currentMode === 'named' ? state.voterName : undefined,
+        room: state.room || undefined,
+        deviceId: state.deviceId,
+        mode: state.currentMode,
+      },
     });
-  };
 
-  const resetVote = () => {
-    setState(prev => {
-      // Remove all votes from this device.
-      const filteredVotes = prev.votes.filter(v => v.deviceId !== prev.deviceId);
+    if (!nextState) return;
 
-      return {
-        ...prev,
-        votes: filteredVotes,
-        userVote: undefined,
-      };
-    });
-  };
-
-  const addSchool = (newSchool: Omit<School, 'id'>) => {
-    // Check for duplicate school name (case-insensitive)
-    const isDuplicate = state.schools.some(
-      s => s.name.toLowerCase().trim() === newSchool.name.toLowerCase().trim()
-    );
-
-    if (isDuplicate) {
-      return; // Don't add duplicate school
-    }
-
-    const school: School = {
-      ...newSchool,
-      id: `custom-${Date.now()}`,
-    };
     setState(prev => ({
       ...prev,
-      schools: [...prev.schools, school],
+      schools: nextState.schools,
+      votes: nextState.votes,
+      userVote: nextState.userVote || nextState.votes.find(v => v.deviceId === prev.deviceId),
     }));
   };
 
-  const deleteSchool = (schoolId: string) => {
+  const resetVote = async () => {
+    if (!state.deviceId) return;
+
+    const nextState = await postStateAction({
+      action: 'resetVote',
+      payload: { deviceId: state.deviceId },
+    });
+
+    if (!nextState) return;
+
     setState(prev => ({
       ...prev,
-      schools: prev.schools.filter(s => s.id !== schoolId),
-      // Remove votes for this school
-      votes: prev.votes.filter(v => v.schoolId !== schoolId),
-      userVote: prev.userVote?.schoolId === schoolId ? undefined : prev.userVote,
+      schools: nextState.schools,
+      votes: nextState.votes,
+      userVote: undefined,
+    }));
+  };
+
+  const addSchool = async (newSchool: Omit<School, 'id'>) => {
+    const nextState = await postStateAction({
+      action: 'addSchool',
+      payload: { school: newSchool },
+    });
+
+    if (!nextState) return;
+    if (nextState.duplicated) return;
+
+    setState(prev => ({
+      ...prev,
+      schools: nextState.schools,
+      votes: nextState.votes,
+      userVote: nextState.votes.find(v => v.deviceId === prev.deviceId),
+    }));
+  };
+
+  const deleteSchool = async (schoolId: string) => {
+    const nextState = await postStateAction({
+      action: 'deleteSchool',
+      payload: { schoolId },
+    });
+
+    if (!nextState) return;
+
+    setState(prev => ({
+      ...prev,
+      schools: nextState.schools,
+      votes: nextState.votes,
+      userVote: nextState.votes.find(v => v.deviceId === prev.deviceId),
     }));
   };
 

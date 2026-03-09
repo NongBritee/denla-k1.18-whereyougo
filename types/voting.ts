@@ -11,7 +11,7 @@ export interface Vote {
   voterName?: string;
   room?: string;
   deviceId: string;
-  timestamp: Date;
+  timestamp: string;
   mode: 'anonymous' | 'named';
 }
 
