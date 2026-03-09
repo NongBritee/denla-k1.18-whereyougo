@@ -30,7 +30,7 @@ export const schools: School[] = [
   },
   {
     id: 'catholic-stgabriel',
-    name: 'โรงเรียนเซนต์กาเบรียล',
+    name: 'โรงเรียนเซนต์คาเบรียล',
     type: 'คาทอลิก',
   }
 ];
